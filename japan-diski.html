@@ -271,7 +271,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 </section>
 </main>
 
-<footer><div class="wrap"><span>© Японские диски и шины — японские диски и шины, хранение, Хабаровск</span><span class="demo">демо-версия сайта · сборка 8</span></div></footer>
+<footer><div class="wrap"><span>© Японские диски и шины — японские диски и шины, хранение, Хабаровск</span><span class="demo">демо-версия сайта · сборка 9</span></div></footer>
 
 <script src="assets.js?v=10"></script>
 <script>
@@ -712,12 +712,34 @@ function concentric(b, L, side = 0){
       const [mi] = stat(sh.cx, sh.cy, rx*.93, ry*.93), [mo, so] = stat(sh.cx, sh.cy, rx*1.09, ry*1.09);
       const v = Math.abs(mi-mo) - .5*so; sc.push([f, v]); if (v > mx) mx = v; }
     if (mx < .06) continue;
-    let pick = null; for (let i=sc.length-1; i>=0; i--) if (sc[i][1] >= mx*.8){ pick = sc[i]; break; }   // из сравнимых границ — самая внешняя: это край обода, а не ступица
+    const im = sc.findIndex(x=>x[1] === mx); let pick = sc[im];
+    for (let i=Math.min(sc.length-1, im+4); i>im; i--) if (sc[i][1] >= mx*.8){ pick = sc[i]; break; }   // рядом с самой чёткой границей может быть чуть более внешняя (полка обода) — берём её; дальние границы — это уже рисунок шины
     const total = mx + sh.pr; if (!best || total > best.total) best = {sh, f:pick[0], v:pick[1], total};
   }
   if (!best) return null;
   const {sh, f} = best;
-  return {x:sh.cx, y:sh.cy, r:sh.R*f, t:sh.t, a:0, R:sh.R, edge:best.v, nn:true, c:b.c, how:"кольцо "+best.v.toFixed(2)};
+  let e = {x:sh.cx, y:sh.cy, r:sh.R*f, t:sh.t, a:0}, how = "кольцо ";
+  // мера одна и та же для любого эллипса: насколько по всему его контуру яркость внутри отличается от яркости снаружи
+  const score = c=>{ const ca = Math.cos(c.a), sa = Math.sin(c.a); let mi = 0, mo = 0, mo2 = 0;
+    for (const p of A){ const u = p[0]*c.r*c.t, v = p[1]*c.r, at = g=>bil(L, (c.x+(u*ca-v*sa)*g-L.x0)*L.k, (c.y+(u*sa+v*ca)*g-L.y0)*L.k), i = at(.93), o = at(1.09); mi += i; mo += o; mo2 += o*o; }
+    mi /= A.length; mo /= A.length; return Math.abs(mi-mo) - .5*Math.sqrt(Math.max(0, mo2/A.length-mo*mo)); };
+  let v = score(e); const v0 = v;
+  if (v < .3){                                    // круг лёг неуверенно — возможно, колесо снято сверху или повёрнуто: пробуем наклонить и сжать эллипс, пока контур не совпадёт
+    const R = sh.R, fits = c=>{ const ca = Math.cos(c.a), sa = Math.sin(c.a), ex = Math.hypot(c.r*c.t*ca, c.r*sa), ey = Math.hypot(c.r*c.t*sa, c.r*ca);
+      return c.t >= .4 && c.t <= 1.2 && Math.abs(c.a) <= .8 && c.r*Math.max(1, c.t) <= R*.9 && c.r*Math.min(1, c.t) >= R*.3 && c.x-ex > b.x1+W*.02 && c.x+ex < b.x2-W*.02 && c.y+ey < b.y2-H*.04 && c.y-ey > b.y1; };
+    let c = {...e}, cv2 = v;
+    for (const f0 of [.6, .7, .8, .86]) for (const a0 of [0, -.45, .45]) for (const t0 of [1, .75]){   // несколько стартов: из круга до сильно наклонённого эллипса спуск сам не доходит
+      let k = {x:(b.x1+b.x2)/2, y:(b.y1+b.y2)/2, r:R*f0, t:t0, a:a0}; if (!fits(k)) continue; let kv = score(k);
+      for (const st of [1, .5]){ let moved = true, guard = 0;
+        while (moved && guard++ < 40){ moved = false;
+          for (const [key, d] of [["a", .1*st], ["t", .05*st], ["x", R*.03*st], ["y", R*.03*st], ["r", R*.03*st]]) for (const sg of [-1, 1]){
+            const n = {...k, [key]: k[key]+sg*d}; if (!fits(n)) continue;
+            const nv = score(n); if (nv > kv+.002){ kv = nv; k = n; moved = true; } } } }
+      if (kv > cv2){ cv2 = kv; c = k; }
+    }
+    if (cv2 >= v0+.1 && cv2 >= .2){ e = c; v = cv2; how = "эллипс "; }
+  }
+  return {x:e.x, y:e.y, r:e.r, t:e.t, a:e.a, R:sh.R, edge:v, nn:true, c:b.c, how:how+v.toFixed(2)};
 }
 function tireInner(M, c, R){                     // где кончается ровная тёмная резина и начинается диск (спицы, блики): доля радиуса шины
   const st = g=>{ let m = 0, m2 = 0; for (const p of OPEN){ const v = bil(M, c.cx+p[0]*R*g*c.t, c.cy+p[1]*R*g); m += v; m2 += v*v; }
@@ -827,7 +849,7 @@ async function findWheels(){                     // нейросеть, а ес�
     let side = 0; if (b){ const q = (b.y2-b.y1)/ah, dir = Math.sign((b.x1+b.x2)-(a.x1+a.x2)); side = q < .93 ? dir : q > 1.07 ? -dir : 0; }
     const pair = [a, b].filter(Boolean).map(o=>({o, w:boxWheel(o, M2, side)})).filter(p=>p.w);
     // колёса одной машины сняты одной камерой: если обод уверенно найден только на одном, второе берёт его форму, наклон и положение внутри своей рамки
-    const sure = p=>/^лучи/.test(p.w.how) && p.w.edge >= .5;
+    const sure = p=>/^лучи/.test(p.w.how) ? p.w.edge >= .5 : /^(кольцо|эллипс)/.test(p.w.how) && p.w.edge >= .2;
     if (pair.length === 2 && sure(pair[0]) !== sure(pair[1])){
       const [g, w] = sure(pair[0]) ? pair : [pair[1], pair[0]], gb = g.o, wb = w.o, k = (wb.y2-wb.y1)/(gb.y2-gb.y1);
       Object.assign(w.w, {x:wb.x1+(g.w.x-gb.x1)/(gb.x2-gb.x1)*(wb.x2-wb.x1), y:wb.y1+(g.w.y-gb.y1)*k, r:g.w.r*k, t:g.w.t, a:g.w.a, R:g.w.R*k, how:"как у соседнего"});

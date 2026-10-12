@@ -16,6 +16,7 @@
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
+html,body{overflow-x:clip;max-width:100%}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 h1,h2,h3{font-family:Unbounded,Manrope,sans-serif;line-height:1.12;margin:0;text-wrap:balance}
 a{color:inherit;text-decoration:none}
@@ -270,7 +271,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 </section>
 </main>
 
-<footer><div class="wrap"><span>© Шинкор — шины, диски, шиномонтаж, Хабаровск</span><span class="demo">демо-версия сайта</span></div></footer>
+<footer><div class="wrap"><span>© Шинкор — шины, диски, шиномонтаж, Хабаровск</span><span class="demo">демо-версия сайта · сборка 9</span></div></footer>
 
 <script src="assets.js?v=10"></script>
 <script>
@@ -603,6 +604,143 @@ function rimContrast(M, c){                      // диск светлее ре
     s += Math.max(-.15, Math.min(.35, i-e)); o += e; }
   return s/FINE.length - .6*Math.max(0, o/FINE.length-.4);
 }
+/* Край обода лучами: из центра колеса во все стороны идём наружу и на каждом луче ищем место, где светлый металл сменяется
+   ровной тёмной резиной. По найденным точкам строим эллипс так, чтобы с ним согласилось большинство лучей (выбросы — спицы,
+   блики, арка — отбрасываются). Точнее подбора «по среднему контрасту»: тот съезжал на внутреннюю кромку полки. */
+function solveN(A, b){                           // метод Гаусса
+  const n = b.length, m = A.map((r,i)=>[...r, b[i]]);
+  for (let i=0;i<n;i++){ let p = i; for (let j=i+1;j<n;j++) if (Math.abs(m[j][i]) > Math.abs(m[p][i])) p = j;
+    if (Math.abs(m[p][i]) < 1e-10) return null; [m[i], m[p]] = [m[p], m[i]];
+    for (let j=i+1;j<n;j++){ const f = m[j][i]/m[i][i]; for (let k=i;k<=n;k++) m[j][k] -= f*m[i][k]; } }
+  const x = new Array(n).fill(0); for (let i=n-1;i>=0;i--){ let v = m[i][n]; for (let k=i+1;k<n;k++) v -= m[i][k]*x[k]; x[i] = v/m[i][i]; }
+  return x;
+}
+function ellipseOf(ps){                          // эллипс с любым наклоном через точки: A·x² + B·xy + C·y² + D·x + E·y = 1 -> {cx, cy, p, q, th}: полуоси p ≥ q, th — угол большой оси
+  const N = 5, M = Array.from({length:N}, ()=>new Array(N).fill(0)), V = new Array(N).fill(0);
+  let mx = 0, my = 0; for (const p of ps){ mx += p.x; my += p.y; } mx /= ps.length; my /= ps.length;
+  let sc = 0; for (const p of ps) sc += Math.hypot(p.x-mx, p.y-my); sc = sc/ps.length || 1;      // считаем в координатах около единицы — иначе система плохо обусловлена
+  mx -= sc*.37; my -= sc*.23;                    // начало координат не в центре эллипса: уравнение «= 1» там вырождается
+  for (const p of ps){ const x = (p.x-mx)/sc, y = (p.y-my)/sc, r = [x*x, x*y, y*y, x, y]; for (let i=0;i<N;i++){ V[i] += r[i]; for (let j=0;j<N;j++) M[i][j] += r[i]*r[j]; } }
+  const k = solveN(M, V); if (!k) return null;
+  const [A, B, C, D, E] = k, det = 4*A*C-B*B; if (det <= 1e-9 || A <= 0) return null;
+  const cx = (B*E-2*C*D)/det, cy = (B*D-2*A*E)/det, g = 1 + A*cx*cx + B*cx*cy + C*cy*cy; if (g <= 0) return null;
+  const h = Math.hypot(A-C, B), l1 = (A+C-h)/2, l2 = (A+C+h)/2; if (l1 <= 0) return null;   // l1 — меньшее собственное число: большая ось
+  return {cx:cx*sc+mx, cy:cy*sc+my, p:Math.sqrt(g/l1)*sc, q:Math.sqrt(g/l2)*sc, th:.5*Math.atan2(B, A-C)+Math.PI/2};
+}
+const eDist = (e, p)=>{ const c = Math.cos(e.th), s = Math.sin(e.th), dx = p.x-e.cx, dy = p.y-e.cy; return Math.abs(Math.hypot((dx*c+dy*s)/e.p, (-dx*s+dy*c)/e.q)-1); };
+function rimRays(M, c0, R, t, pol = 1, keep = null){          // точки края обода вокруг центра c0 (всё в точках карты M); pol: 1 — диск светлее шины, -1 — темнее
+  const N = 72, pts = [], st = .02;
+  for (let k=0;k<N;k++){
+    const an = k*2*Math.PI/N, dx = Math.cos(an)*R*t, dy = Math.sin(an)*R, v = [];
+    for (let q=.3; q<=1.2; q+=st) v.push(bil(M, c0.cx+dx*q, c0.cy+dy*q));
+    const sc = new Float32Array(v.length); let mx = 0;
+    for (let i=3; i<v.length-5; i++){
+      const ins = (v[i]+v[i-1]+v[i-2])/3, o = [v[i+2],v[i+3],v[i+4],v[i+5]], out = (o[0]+o[1]+o[2]+o[3])/4;
+      if (pol > 0) sc[i] = ins-out - .6*(Math.max(...o)-Math.min(...o)) - .5*Math.max(0, out-.4);
+      else { const a = [v[i], v[i-1], v[i-2], v[i-3]]; sc[i] = out-ins - .6*(Math.max(...a)-Math.min(...a)) - .5*Math.max(0, ins-.35); }   // тёмный диск: внутри ровно и темно, снаружи светлее
+      if (sc[i] > mx) mx = sc[i];
+    }
+    if (mx < .045) continue;
+    let bi = -1;
+    if (pol > 0){ for (let i=v.length-6; i>=3; i--) if (sc[i] >= mx*.75 && sc[i] >= sc[i-1] && sc[i] >= sc[i+1]){ bi = i; break; } }   // из сравнимых переходов — самый внешний
+    else for (let i=4; i<v.length-5; i++) if (sc[i] >= mx*.6 && sc[i] >= sc[i-1] && sc[i] >= sc[i+1]){ bi = i; break; }               // у тёмного диска — самый внутренний
+    if (bi > 0){ const q = .3+(bi+1)*st, p = {x:c0.cx+dx*q, y:c0.cy+dy*q, sc:sc[bi]}; if (!keep || keep(p)) pts.push(p); }
+  }
+  return pts;
+}
+function rimFit(M, c0, R, t, pol = 1, ok = null, keep = null){ // эллипс обода по лучам; ok(e) — геометрические ограничения; null — края не видно
+  let c = {cx:c0.cx, cy:c0.cy}, rr = R, tt = t, out = null, seed = 12345;
+  const rnd = n=>{ seed = (Math.imul(seed, 1103515245)+12345) & 0x7fffffff; return (seed >>> 8) % n; };   // свой генератор: результат на одном фото всегда один и тот же
+  for (let pass=0; pass<2; pass++){
+    const pts = rimRays(M, c, rr, tt, pol, keep); if (pts.length < 24) return out;
+    let best = null; const tol = .045;
+    for (let it=0; it<500; it++){
+      const sub = new Set(); while (sub.size < 5) sub.add(rnd(pts.length));
+      const e = ellipseOf([...sub].map(i=>pts[i])); if (!e || e.q < e.p*.22 || e.p < R*.38 || e.p > R*1.0 || (ok && !ok(e))) continue;
+      let n = 0, bins = 0; for (const p of pts) if (eDist(e,p) < tol){ n++; bins |= 1 << (((Math.atan2(p.y-e.cy, p.x-e.cx)+Math.PI)/(Math.PI/6))|0)%12; }
+      let cover = 0; for (let b=0;b<12;b++) if (bins >> b & 1) cover++;
+      if (cover < 6) continue;                   // точки должны охватывать хотя бы полкруга, иначе эллипс по короткой дуге — выдумка
+      const scv = n + cover; if (!best || scv > best.scv) best = {e, n, scv};
+    }
+    if (!best || best.n < 20) return out;
+    let e = best.e; for (let k=0;k<2;k++){ const inl = pts.filter(p=>eDist(e,p) < tol), f = inl.length >= 8 && ellipseOf(inl); if (f && f.q >= f.p*.22 && (!ok || ok(f))) e = f; }
+    const n = pts.filter(p=>eDist(e,p) < tol*.8).length;
+    // в модель колеса: r — полуось, что ближе к вертикали, t — отношение второй к ней, a — наклон
+    let th = e.th; while (th > Math.PI/2) th -= Math.PI; while (th < -Math.PI/2) th += Math.PI;
+    const vert = Math.abs(Math.abs(th)-Math.PI/2) < Math.PI/4;
+    out = vert ? {cx:e.cx, cy:e.cy, ry:e.p, t:e.q/e.p, a:th > 0 ? th-Math.PI/2 : th+Math.PI/2, n} : {cx:e.cx, cy:e.cy, ry:e.q, t:e.p/e.q, a:th, n};
+    if (out.t > .97 && out.t < 1.03){ out.a = 0; }  // почти круг — наклон не определён
+    c = {cx:e.cx, cy:e.cy}; rr = Math.max(e.p, e.q)/.7; tt = 1;
+  }
+  return out;
+}
+function localMap(b){                            // контрастная карта одного колеса: яркость растянута по самой рамке, поэтому виден и чёрный диск на серой шине
+  const m = Math.max(b.x2-b.x1, b.y2-b.y1)*.18, x0 = Math.max(0, b.x1-m), y0 = Math.max(0, b.y1-m), x1 = Math.min(photo.width, b.x2+m), y1 = Math.min(photo.height, b.y2+m);
+  const k = Math.min(2, 320/Math.max(x1-x0, y1-y0)), w = Math.max(8, Math.round((x1-x0)*k)), h = Math.max(8, Math.round((y1-y0)*k));
+  const c = document.createElement("canvas"); c.width = w; c.height = h; const x = c.getContext("2d", {willReadFrequently:true});
+  x.imageSmoothingQuality = "high"; x.filter = "blur(1px)"; x.drawImage(photo, x0, y0, x1-x0, y1-y0, 0, 0, w, h);
+  const d = x.getImageData(0, 0, w, h).data, g = new Float32Array(w*h), hist = new Uint32Array(256);
+  const bx0 = (b.x1-x0)*k, bx1 = (b.x2-x0)*k, by0 = (b.y1-y0)*k, by1 = (b.y2-y0)*k; let n = 0;
+  for (let i=0;i<g.length;i++){ const v = Math.max(d[i*4], d[i*4+1], d[i*4+2]); g[i] = v;   // максимум по каналам: цветной диск — светлый, резина — тёмная
+    const px = i%w, py = (i/w)|0; if (px > bx0 && px < bx1 && py > by0 && py < by1){ hist[v]++; n++; } }
+  let lo = 0, hi = 255, acc = 0; for (let v=0;v<256;v++){ acc += hist[v]; if (acc < n*.02) lo = v; if (acc < n*.9) hi = v; }
+  const sp = Math.max(24, hi-lo); for (let i=0;i<g.length;i++) g[i] = Math.min(1, Math.max(0, (g[i]-lo)/sp));
+  return {g, w, h, x0, y0, k};
+}
+/* Соосная подгонка: шина задана рамкой, обод — эллипс той же формы с тем же центром, меньше в f раз. Перебираем f и небольшие
+   сдвиги центра и берём кольцо, по которому яркость меняется сильнее всего по всей окружности (диск светлее или темнее резины —
+   неважно). Свободы мало, поэтому не уезжает на арку и протектор, как свободная подгонка. */
+function concentric(b, L, side = 0){
+  const W = b.x2-b.x1, H = b.y2-b.y1, q = W/H, A = ring(48), cands = [];
+  const stat = (cx, cy, rx, ry)=>{ let m = 0, m2 = 0;
+    for (const p of A){ const v = bil(L, (cx+p[0]*rx-L.x0)*L.k, (cy+p[1]*ry-L.y0)*L.k); m += v; m2 += v*v; } m /= A.length;
+    return [m, Math.sqrt(Math.max(0, m2/A.length-m*m))]; };
+  const shapes = [];                              // форма и положение шины внутри рамки
+  if (q >= .9){                                   // вид сбоку: круг. Рамка бывает срезана сверху аркой или снизу травой/песком — пробуем центр на разной высоте
+    const R = Math.max(H/2, Math.min(W/2, H/2*1.12));
+    for (let k=0;k<=4;k++) for (const dx of [-.03, 0, .03]) shapes.push({R, t:1, cx:(b.x1+b.x2)/2+dx*W, cy:b.y1+R+(b.y2-R-(b.y1+R))*k/4, pr:-Math.abs(dx)*.6});
+    if (H >= W) for (const dy of [-.04, .04]) shapes.push({R, t:1, cx:(b.x1+b.x2)/2, cy:(b.y1+b.y2)/2+dy*H, pr:-.02});
+  } else {                                        // под углом: эллипс уже рамки на видимую часть протектора, прижат к одному из краёв
+    const R = H/2*1.02;
+    for (let t = q-.24; t <= q+.001; t += .04){ if (t < .25) continue; const free = Math.max(0, W/2-R*t);
+      for (const sd of side ? [side, 0] : [-1, 0, 1]) for (const dy of [-.03, 0, .03]) shapes.push({R, t, cx:(b.x1+b.x2)/2+sd*free, cy:b.y2-R+dy*H, pr:-Math.abs(t-(q-TREAD))*.25-(side && sd !== side ? .03 : 0)}); }
+  }
+  let best = null;
+  for (const sh of shapes){
+    const sc = []; let mx = 0;
+    for (let f=.5; f<=.861; f+=.02){ const rx = sh.R*sh.t*f, ry = sh.R*f;
+      const [mi] = stat(sh.cx, sh.cy, rx*.93, ry*.93), [mo, so] = stat(sh.cx, sh.cy, rx*1.09, ry*1.09);
+      const v = Math.abs(mi-mo) - .5*so; sc.push([f, v]); if (v > mx) mx = v; }
+    if (mx < .06) continue;
+    const im = sc.findIndex(x=>x[1] === mx); let pick = sc[im];
+    for (let i=Math.min(sc.length-1, im+4); i>im; i--) if (sc[i][1] >= mx*.8){ pick = sc[i]; break; }   // рядом с самой чёткой границей может быть чуть более внешняя (полка обода) — берём её; дальние границы — это уже рисунок шины
+    const total = mx + sh.pr; if (!best || total > best.total) best = {sh, f:pick[0], v:pick[1], total};
+  }
+  if (!best) return null;
+  const {sh, f} = best;
+  let e = {x:sh.cx, y:sh.cy, r:sh.R*f, t:sh.t, a:0}, how = "кольцо ";
+  // мера одна и та же для любого эллипса: насколько по всему его контуру яркость внутри отличается от яркости снаружи
+  const score = c=>{ const ca = Math.cos(c.a), sa = Math.sin(c.a); let mi = 0, mo = 0, mo2 = 0;
+    for (const p of A){ const u = p[0]*c.r*c.t, v = p[1]*c.r, at = g=>bil(L, (c.x+(u*ca-v*sa)*g-L.x0)*L.k, (c.y+(u*sa+v*ca)*g-L.y0)*L.k), i = at(.93), o = at(1.09); mi += i; mo += o; mo2 += o*o; }
+    mi /= A.length; mo /= A.length; return Math.abs(mi-mo) - .5*Math.sqrt(Math.max(0, mo2/A.length-mo*mo)); };
+  let v = score(e); const v0 = v;
+  if (v < .3){                                    // круг лёг неуверенно — возможно, колесо снято сверху или повёрнуто: пробуем наклонить и сжать эллипс, пока контур не совпадёт
+    const R = sh.R, fits = c=>{ const ca = Math.cos(c.a), sa = Math.sin(c.a), ex = Math.hypot(c.r*c.t*ca, c.r*sa), ey = Math.hypot(c.r*c.t*sa, c.r*ca);
+      return c.t >= .4 && c.t <= 1.2 && Math.abs(c.a) <= .8 && c.r*Math.max(1, c.t) <= R*.9 && c.r*Math.min(1, c.t) >= R*.3 && c.x-ex > b.x1+W*.02 && c.x+ex < b.x2-W*.02 && c.y+ey < b.y2-H*.04 && c.y-ey > b.y1; };
+    let c = {...e}, cv2 = v;
+    for (const f0 of [.6, .7, .8, .86]) for (const a0 of [0, -.45, .45]) for (const t0 of [1, .75]){   // несколько стартов: из круга до сильно наклонённого эллипса спуск сам не доходит
+      let k = {x:(b.x1+b.x2)/2, y:(b.y1+b.y2)/2, r:R*f0, t:t0, a:a0}; if (!fits(k)) continue; let kv = score(k);
+      for (const st of [1, .5]){ let moved = true, guard = 0;
+        while (moved && guard++ < 40){ moved = false;
+          for (const [key, d] of [["a", .1*st], ["t", .05*st], ["x", R*.03*st], ["y", R*.03*st], ["r", R*.03*st]]) for (const sg of [-1, 1]){
+            const n = {...k, [key]: k[key]+sg*d}; if (!fits(n)) continue;
+            const nv = score(n); if (nv > kv+.002){ kv = nv; k = n; moved = true; } } } }
+      if (kv > cv2){ cv2 = kv; c = k; }
+    }
+    if (cv2 >= v0+.1 && cv2 >= .2){ e = c; v = cv2; how = "эллипс "; }
+  }
+  return {x:e.x, y:e.y, r:e.r, t:e.t, a:e.a, R:sh.R, edge:v, nn:true, c:b.c, how:how+v.toFixed(2)};
+}
 function tireInner(M, c, R){                     // где кончается ровная тёмная резина и начинается диск (спицы, блики): доля радиуса шины
   const st = g=>{ let m = 0, m2 = 0; for (const p of OPEN){ const v = bil(M, c.cx+p[0]*R*g*c.t, c.cy+p[1]*R*g); m += v; m2 += v*v; }
     m /= OPEN.length; return [m, Math.sqrt(Math.max(0, m2/OPEN.length-m*m))]; };
@@ -610,6 +748,14 @@ function tireInner(M, c, R){                     // где кончается р
   if (mb > .45) return null;                     // это не резина — рамке не верим
   for (let g=.84; g>=.56; g-=.02){ const [m, sd] = st(g); if (m-mb > .09 || sd > sb+.07) return Math.min(.84, g+.03); }
   return null;
+}
+function treadSide(M, b, s){                     // с какой стороны рамки виден протектор (рельефные шашки): -1 слева, 1 справа, 0 — не видно
+  const W = (b.x2-b.x1)*s, H = (b.y2-b.y1)*s, x1 = b.x1*s, y1 = b.y1*s;
+  const rough = x0=>{ let g = 0, n = 0;
+    for (let y = y1+H*.36; y < y1+H*.62; y += 2) for (let x = x0; x < x0+W*.1; x += 2){ g += Math.abs(bil(M, x+2, y)-bil(M, x, y)) + Math.abs(bil(M, x, y+2)-bil(M, x, y)); n++; }
+    return g/Math.max(1, n); };
+  const l = rough(x1+W*.04), r = rough(x1+W*.86);   // полосы у левого и правого края на высоте середины колеса — там в рамке только шина
+  return r > l*1.5 && r > .03 ? 1 : l > r*1.5 && l > .03 ? -1 : 0;
 }
 function boxWheel(b, M2, side = 0){
   const W = b.x2-b.x1, H = b.y2-b.y1, s = M2 ? M2.w/photo.width : 1, cands = [];
@@ -620,7 +766,7 @@ function boxWheel(b, M2, side = 0){
     for (const t of ts){
       if (t < .25 || t > 1) continue;
       const rx = R*t, cy = b.y2-R, free = Math.max(0, W/2-rx);   // free — на сколько лицевая сторона может съехать от центра рамки
-      for (const sd of side ? [side] : free < R*.04 ? [0] : [-1, 0, 1]) cands.push({R, t, cx:(b.x1+b.x2)/2 + sd*free, cy, sd, t0:t0 === null ? 1 : t0, prior:-Math.abs(t-(t0 === null ? 1 : t0))*.25 - Math.abs(R/(H/2)-1.03)*.15});
+      for (const sd of free < R*.04 ? [0] : [-1, 0, 1]) cands.push({R, t, cx:(b.x1+b.x2)/2 + sd*free, cy, sd, t0:t0 === null ? 1 : t0, prior:(side && sd === side ? .03 : 0) - Math.abs(t-(t0 === null ? 1 : t0))*.25 - Math.abs(R/(H/2)-1.03)*.15});
     }
   }
   let best = null;
@@ -630,9 +776,52 @@ function boxWheel(b, M2, side = 0){
     c.e = e; c.f = f; if (!best || e+c.prior > best.e+best.prior) best = c;
   }
   if (!best) return null;
+  if (M2){                                       // точнее всего — лучи по контрастной карте самого колеса, в обеих полярностях
+    const L = localMap(b), R0 = Math.max(W, H)/2, fits = {};
+    const inside = pol=>e=>{                          // обод лежит внутри шины: от него до краёв рамки остаётся резина (снизу — боковина, с боков — хотя бы её край)
+      const c = Math.cos(e.th), sn = Math.sin(e.th), ex = Math.hypot(e.p*c, e.q*sn)/L.k, ey = Math.hypot(e.p*sn, e.q*c)/L.k, x = e.cx/L.k+L.x0, y = e.cy/L.k+L.y0;
+      const mx = pol > 0 ? .045 : .07, my = pol > 0 ? .065 : .1;   // у тёмного диска запас больше: его легко спутать с тёмной боковиной
+      return x-ex > b.x1+W*mx && x+ex < b.x2-W*mx && y+ey < b.y2-H*my && y-ey > b.y1 && e.p/L.k < R0*(pol > 0 ? .87 : .86); };
+    // точки у самого края рамки — это край шины на фоне земли, а не обод: между ободом и краем колеса всегда есть боковина
+    const keep = p=>{ const x = p.x/L.k+L.x0, y = p.y/L.k+L.y0; return x > b.x1+W*.09 && x < b.x2-W*.09 && y < b.y2-H*.12; };
+    for (const pol of [1, -1]) for (const [dx, dy] of [[0,0],[-.14,.1],[.14,.1],[0,-.12]]){
+      const f = rimFit(L, {cx:((b.x1+b.x2)/2+dx*R0-L.x0)*L.k, cy:((b.y1+b.y2)/2+dy*R0-L.y0)*L.k}, R0*L.k, 1, pol, inside(pol), pol > 0 ? null : keep);
+      if (f && (!fits[pol] || f.n > fits[pol].n)) fits[pol] = {...f, pol};
+      if (fits[pol] && fits[pol].n >= 54) break;
+    }
+    // край обода — самая внешняя граница внутри шины: из двух уверенных находок (светлый и тёмный диск) берём большую
+    const size = f=>f.ry*Math.sqrt(f.t), good = [fits[1], fits[-1]].filter(f=>f && f.n >= 30).sort((u,v)=>size(v)-size(u));
+    // обод соосен с шиной: центр найденного эллипса должен быть около центра колеса, иначе это арка или протектор, а не обод
+    const central = f=>{ const dx = (f.cx/L.k+L.x0-(b.x1+b.x2)/2)/W, dy = (f.cy/L.k+L.y0-(b.y1+b.y2)/2)/H; return Math.abs(dx) <= .1 && dy >= -.06 && dy <= .1; };
+    const fit = good.filter(f=>f.n >= 36 && central(f))[0];
+    const cc = concentric(b, L, side);            // второй способ — обод как кольцо, соосное с шиной
+    if (fit){
+      const x = fit.cx/L.k+L.x0, y = fit.cy/L.k+L.y0, r = fit.ry/L.k;
+      // из двух ответов берём тот, по контуру которого яркость меняется чётче (одна и та же мера для обоих)
+      const ca = Math.cos(fit.a), sa = Math.sin(fit.a), st = g=>{ let m = 0, m2 = 0; const A = ring(48);
+        for (const p of A){ const u = p[0]*r*fit.t*g, v = p[1]*r*g, val = bil(L, (x+u*ca-v*sa-L.x0)*L.k, (y+u*sa+v*ca-L.y0)*L.k); m += val; m2 += val*val; }
+        m /= A.length; return [m, Math.sqrt(Math.max(0, m2/A.length-m*m))]; };
+      const [mi] = st(.93), [mo, so] = st(1.09), sF = Math.abs(mi-mo) - .5*so;
+      if (!cc || sF >= cc.edge*.9) return {x, y, r, t:fit.t, a:fit.a, R:H/2*1.03, edge:fit.n/72, nn:true, c:b.c, how:(fit.pol > 0 ? "лучи+ " : "лучи− ")+fit.n};
+    }
+    if (cc) return cc;
+  }
+  if (M2){                                       // запасной вариант — лучи по общей карте из примерного центра колеса
+    const p = cands.filter(c=>c.sd === (side||0)).sort((u,v)=>v.prior-u.prior)[0] || best;
+    const tries = [p, best, ...cands.filter(c=>c.sd && c.t === p.t && c.R === p.R)];
+    let fit = null;
+    for (const c of tries){ const f = rimFit(M2, {cx:c.cx*s, cy:c.cy*s}, c.R*s, c.t); if (f && (!fit || f.n > fit.n)) fit = {...f, R:c.R}; if (fit && fit.n >= 50) break; }
+    const inBox = fit && fit.cx/s > b.x1 && fit.cx/s < b.x2 && fit.cy/s > b.y1 && fit.cy/s < b.y2 && fit.ry/s < fit.R*.87 && fit.ry/s > fit.R*.5
+      && fit.cx/s - fit.ry/s*fit.t > b.x1 - W*.04 && fit.cx/s + fit.ry/s*fit.t < b.x2 + W*.04 && fit.cy/s + fit.ry/s < b.y2;   // обод целиком внутри рамки колеса   // обод занимает 50–87% радиуса шины: больше — это уже край шины
+    if (inBox && fit.n >= 30) return {x:fit.cx/s, y:fit.cy/s, r:fit.ry/s, t:fit.t, a:fit.a, R:fit.R, edge:fit.n/72, nn:true, c:b.c, how:"лучи "+fit.n};
+  }
   let how = "край";
   if (best.e < .1){                              // край диска не виден (чёрный диск): берём типичные пропорции
-    const mid = cands.filter(c=>c.sd === (side||0)).sort((p,q)=>q.prior-p.prior)[0] || best; best = {...mid, f:.66}; how = "пропорции";
+    const tr = 0;   // treadSide(M2, b, s) пока выключен: не проверен на фото с чёрными дисками без вставки
+    //      // протектор виден сбоку — значит колесо под углом, а лицевая сторона прижата к другому краю рамки
+    const pool = tr ? cands.filter(c=>c.sd === -tr && c.t < .97) : cands.filter(c=>c.sd === 0);
+    const mid = pool.sort((p,q)=>(q.prior+(tr ? -Math.abs(q.t-Math.min(.9, q.t0))*.25 : 0))-(p.prior+(tr ? -Math.abs(p.t-Math.min(.9, p.t0))*.25 : 0)))[0] || best;
+    best = {...mid, f:.66}; how = tr ? "протектор" : "пропорции";
     const f = M2 && tireInner(M2, {cx:best.cx*s, cy:best.cy*s, t:best.t}, best.R*s); if (f){ best.f = f; how = "резина"; }
   } else if (M2){                                // подправляем центр и ракурс вокруг найденного
     let c = {cx:best.cx*s, cy:best.cy*s, ry:best.R*best.f*s, t:best.t, a:0}, e = rimContrast(M2, c); const c0 = {...c};
@@ -654,11 +843,18 @@ async function findWheels(){                     // нейросеть, а ес�
     const ws = bs.filter(b=>b.c >= .3).map(b=>({b, s:b.c*Math.sqrt((b.x2-b.x1)*(b.y2-b.y1))})).sort((a,b)=>b.s-a.s).map(o=>o.b);
     if (!ws.length) return [];
     const a = ws[0], ah = a.y2-a.y1;             // главное колесо — самое уверенное и крупное; второе — похожее по размеру, в стороне от него
-    const b = bs.filter(o=>o !== a && o.c >= .18).map(o=>({o, s:o.c*Math.sqrt((o.x2-o.x1)*(o.y2-o.y1))})).sort((p,q)=>q.s-p.s).map(p=>p.o)
+    const b = bs.filter(o=>o !== a && (o.c >= .3 || o.c >= .18 && (o.x2-o.x1)/(o.y2-o.y1) >= .55))   // узкая неуверенная рамка — дальнее колесо, наполовину закрытое кузовом: диск туда сам не ставим.map(o=>({o, s:o.c*Math.sqrt((o.x2-o.x1)*(o.y2-o.y1))})).sort((p,q)=>q.s-p.s).map(p=>p.o)
       .find(o=>{ const q = (o.y2-o.y1)/ah; return q > .4 && q < 2.5 && Math.abs((o.x1+o.x2)-(a.x1+a.x2))/2 > Math.max(ah, o.y2-o.y1)*.6; });
     // камера смещена к более крупному колесу: протектор виден с её стороны, лицевая сторона обоих колёс прижата к противоположному краю рамки
     let side = 0; if (b){ const q = (b.y2-b.y1)/ah, dir = Math.sign((b.x1+b.x2)-(a.x1+a.x2)); side = q < .93 ? dir : q > 1.07 ? -dir : 0; }
-    return [a, b].filter(Boolean).map(o=>boxWheel(o, M2, side)).filter(Boolean).sort((p,q)=>p.x-q.x);
+    const pair = [a, b].filter(Boolean).map(o=>({o, w:boxWheel(o, M2, side)})).filter(p=>p.w);
+    // колёса одной машины сняты одной камерой: если обод уверенно найден только на одном, второе берёт его форму, наклон и положение внутри своей рамки
+    const sure = p=>/^лучи/.test(p.w.how) ? p.w.edge >= .5 : /^(кольцо|эллипс)/.test(p.w.how) && p.w.edge >= .2;
+    if (pair.length === 2 && sure(pair[0]) !== sure(pair[1])){
+      const [g, w] = sure(pair[0]) ? pair : [pair[1], pair[0]], gb = g.o, wb = w.o, k = (wb.y2-wb.y1)/(gb.y2-gb.y1);
+      Object.assign(w.w, {x:wb.x1+(g.w.x-gb.x1)/(gb.x2-gb.x1)*(wb.x2-wb.x1), y:wb.y1+(g.w.y-gb.y1)*k, r:g.w.r*k, t:g.w.t, a:g.w.a, R:g.w.R*k, how:"как у соседнего"});
+    }
+    return pair.map(p=>p.w).sort((p,q)=>p.x-q.x);
   } catch(e){}
   try { return detectWheels(); } catch(e){ return []; }
 }
@@ -795,11 +991,13 @@ function drawWheel(wl, R, near){
   ctx.save(); ctx.translate(wl.x, wl.y); ctx.rotate(A); ctx.scale(t, 1);
   ctx.beginPath(); ctx.arc(0, 0, R, 0, 7); ctx.clip();
   // лицо диска утоплено в обод: под углом оно смещается к ближнему колесу, а с дальней стороны видна стенка обода
-  const sh = near * R*.13*Math.sqrt(Math.max(0, 1-t*t))/t, Rf = R*.975;
-  const wall = ctx.createLinearGradient(-R*near, 0, R*near, 0);
+  // t > 1 — снято сверху: эллипс шире, чем выше; тогда лицо уходит вверх, а снизу видна внутренняя стенка обода
+  const top = t > 1.04, q = top ? 1/t : t, dep = R*.07*Math.sqrt(Math.max(0, 1-q*q)), Rf = R*.975;
+  const shx = top ? 0 : near*dep/t, shy = top ? -dep : 0;
+  const wall = top ? ctx.createLinearGradient(0, R, 0, -R) : ctx.createLinearGradient(-R*near, 0, R*near, 0);
   wall.addColorStop(0, "#4a4d53"); wall.addColorStop(.25, "#1b1c1f"); wall.addColorStop(1, "#060607");
-  ctx.fillStyle = near ? wall : "#0b0b0d"; ctx.fillRect(-R, -R, R*2, R*2);
-  ctx.drawImage(wheelFace(R), sh-Rf, -Rf, Rf*2, Rf*2);
+  ctx.fillStyle = top || near ? wall : "#0b0b0d"; ctx.fillRect(-R, -R, R*2, R*2);
+  ctx.drawImage(wheelFace(R), shx-Rf, shy-Rf, Rf*2, Rf*2);
   const seat = ctx.createRadialGradient(0, 0, R*.94, 0, 0, R);            // диск «сидит» в шине: край уходит в тень
   seat.addColorStop(0, "rgba(0,0,0,0)"); seat.addColorStop(1, "rgba(0,0,0,.4)");
   ctx.fillStyle = seat; ctx.fillRect(-R, -R, R*2, R*2);

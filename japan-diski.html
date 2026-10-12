@@ -271,7 +271,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 </section>
 </main>
 
-<footer><div class="wrap"><span>© Японские диски и шины — японские диски и шины, хранение, Хабаровск</span><span class="demo">демо-версия сайта · сборка 7</span></div></footer>
+<footer><div class="wrap"><span>© Японские диски и шины — японские диски и шины, хранение, Хабаровск</span><span class="demo">демо-версия сайта · сборка 8</span></div></footer>
 
 <script src="assets.js?v=10"></script>
 <script>
@@ -687,6 +687,38 @@ function localMap(b){                            // контрастная ка�
   const sp = Math.max(24, hi-lo); for (let i=0;i<g.length;i++) g[i] = Math.min(1, Math.max(0, (g[i]-lo)/sp));
   return {g, w, h, x0, y0, k};
 }
+/* Соосная подгонка: шина задана рамкой, обод — эллипс той же формы с тем же центром, меньше в f раз. Перебираем f и небольшие
+   сдвиги центра и берём кольцо, по которому яркость меняется сильнее всего по всей окружности (диск светлее или темнее резины —
+   неважно). Свободы мало, поэтому не уезжает на арку и протектор, как свободная подгонка. */
+function concentric(b, L, side = 0){
+  const W = b.x2-b.x1, H = b.y2-b.y1, q = W/H, A = ring(48), cands = [];
+  const stat = (cx, cy, rx, ry)=>{ let m = 0, m2 = 0;
+    for (const p of A){ const v = bil(L, (cx+p[0]*rx-L.x0)*L.k, (cy+p[1]*ry-L.y0)*L.k); m += v; m2 += v*v; } m /= A.length;
+    return [m, Math.sqrt(Math.max(0, m2/A.length-m*m))]; };
+  const shapes = [];                              // форма и положение шины внутри рамки
+  if (q >= .9){                                   // вид сбоку: круг. Рамка бывает срезана сверху аркой или снизу травой/песком — пробуем центр на разной высоте
+    const R = Math.max(H/2, Math.min(W/2, H/2*1.12));
+    for (let k=0;k<=4;k++) for (const dx of [-.03, 0, .03]) shapes.push({R, t:1, cx:(b.x1+b.x2)/2+dx*W, cy:b.y1+R+(b.y2-R-(b.y1+R))*k/4, pr:-Math.abs(dx)*.6});
+    if (H >= W) for (const dy of [-.04, .04]) shapes.push({R, t:1, cx:(b.x1+b.x2)/2, cy:(b.y1+b.y2)/2+dy*H, pr:-.02});
+  } else {                                        // под углом: эллипс уже рамки на видимую часть протектора, прижат к одному из краёв
+    const R = H/2*1.02;
+    for (let t = q-.24; t <= q+.001; t += .04){ if (t < .25) continue; const free = Math.max(0, W/2-R*t);
+      for (const sd of side ? [side, 0] : [-1, 0, 1]) for (const dy of [-.03, 0, .03]) shapes.push({R, t, cx:(b.x1+b.x2)/2+sd*free, cy:b.y2-R+dy*H, pr:-Math.abs(t-(q-TREAD))*.25-(side && sd !== side ? .03 : 0)}); }
+  }
+  let best = null;
+  for (const sh of shapes){
+    const sc = []; let mx = 0;
+    for (let f=.5; f<=.861; f+=.02){ const rx = sh.R*sh.t*f, ry = sh.R*f;
+      const [mi] = stat(sh.cx, sh.cy, rx*.93, ry*.93), [mo, so] = stat(sh.cx, sh.cy, rx*1.09, ry*1.09);
+      const v = Math.abs(mi-mo) - .5*so; sc.push([f, v]); if (v > mx) mx = v; }
+    if (mx < .06) continue;
+    let pick = null; for (let i=sc.length-1; i>=0; i--) if (sc[i][1] >= mx*.8){ pick = sc[i]; break; }   // из сравнимых границ — самая внешняя: это край обода, а не ступица
+    const total = mx + sh.pr; if (!best || total > best.total) best = {sh, f:pick[0], v:pick[1], total};
+  }
+  if (!best) return null;
+  const {sh, f} = best;
+  return {x:sh.cx, y:sh.cy, r:sh.R*f, t:sh.t, a:0, R:sh.R, edge:best.v, nn:true, c:b.c, how:"кольцо "+best.v.toFixed(2)};
+}
 function tireInner(M, c, R){                     // где кончается ровная тёмная резина и начинается диск (спицы, блики): доля радиуса шины
   const st = g=>{ let m = 0, m2 = 0; for (const p of OPEN){ const v = bil(M, c.cx+p[0]*R*g*c.t, c.cy+p[1]*R*g); m += v; m2 += v*v; }
     m /= OPEN.length; return [m, Math.sqrt(Math.max(0, m2/OPEN.length-m*m))]; };
@@ -737,11 +769,20 @@ function boxWheel(b, M2, side = 0){
     }
     // край обода — самая внешняя граница внутри шины: из двух уверенных находок (светлый и тёмный диск) берём большую
     const size = f=>f.ry*Math.sqrt(f.t), good = [fits[1], fits[-1]].filter(f=>f && f.n >= 30).sort((u,v)=>size(v)-size(u));
-    const fit = good[0];
+    // обод соосен с шиной: центр найденного эллипса должен быть около центра колеса, иначе это арка или протектор, а не обод
+    const central = f=>{ const dx = (f.cx/L.k+L.x0-(b.x1+b.x2)/2)/W, dy = (f.cy/L.k+L.y0-(b.y1+b.y2)/2)/H; return Math.abs(dx) <= .1 && dy >= -.06 && dy <= .1; };
+    const fit = good.filter(f=>f.n >= 36 && central(f))[0];
+    const cc = concentric(b, L, side);            // второй способ — обод как кольцо, соосное с шиной
     if (fit){
       const x = fit.cx/L.k+L.x0, y = fit.cy/L.k+L.y0, r = fit.ry/L.k;
-      return {x, y, r, t:fit.t, a:fit.a, R:H/2*1.03, edge:fit.n/72, nn:true, c:b.c, how:(fit.pol > 0 ? "лучи+ " : "лучи− ")+fit.n};
+      // из двух ответов берём тот, по контуру которого яркость меняется чётче (одна и та же мера для обоих)
+      const ca = Math.cos(fit.a), sa = Math.sin(fit.a), st = g=>{ let m = 0, m2 = 0; const A = ring(48);
+        for (const p of A){ const u = p[0]*r*fit.t*g, v = p[1]*r*g, val = bil(L, (x+u*ca-v*sa-L.x0)*L.k, (y+u*sa+v*ca-L.y0)*L.k); m += val; m2 += val*val; }
+        m /= A.length; return [m, Math.sqrt(Math.max(0, m2/A.length-m*m))]; };
+      const [mi] = st(.93), [mo, so] = st(1.09), sF = Math.abs(mi-mo) - .5*so;
+      if (!cc || sF >= cc.edge*.9) return {x, y, r, t:fit.t, a:fit.a, R:H/2*1.03, edge:fit.n/72, nn:true, c:b.c, how:(fit.pol > 0 ? "лучи+ " : "лучи− ")+fit.n};
     }
+    if (cc) return cc;
   }
   if (M2){                                       // запасной вариант — лучи по общей карте из примерного центра колеса
     const p = cands.filter(c=>c.sd === (side||0)).sort((u,v)=>v.prior-u.prior)[0] || best;

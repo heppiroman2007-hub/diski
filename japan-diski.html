@@ -271,7 +271,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 </section>
 </main>
 
-<footer><div class="wrap"><span>© Японские диски и шины — японские диски и шины, хранение, Хабаровск</span><span class="demo">демо-версия сайта · сборка 4</span></div></footer>
+<footer><div class="wrap"><span>© Японские диски и шины — японские диски и шины, хранение, Хабаровск</span><span class="demo">демо-версия сайта · сборка 5</span></div></footer>
 
 <script src="assets.js?v=10"></script>
 <script>
@@ -668,6 +668,14 @@ function tireInner(M, c, R){                     // где кончается р
   for (let g=.84; g>=.56; g-=.02){ const [m, sd] = st(g); if (m-mb > .09 || sd > sb+.07) return Math.min(.84, g+.03); }
   return null;
 }
+function treadSide(M, b, s){                     // с какой стороны рамки виден протектор (рельефные шашки): -1 слева, 1 справа, 0 — не видно
+  const W = (b.x2-b.x1)*s, H = (b.y2-b.y1)*s, x1 = b.x1*s, y1 = b.y1*s;
+  const rough = x0=>{ let g = 0, n = 0;
+    for (let y = y1+H*.36; y < y1+H*.62; y += 2) for (let x = x0; x < x0+W*.1; x += 2){ g += Math.abs(bil(M, x+2, y)-bil(M, x, y)) + Math.abs(bil(M, x, y+2)-bil(M, x, y)); n++; }
+    return g/Math.max(1, n); };
+  const l = rough(x1+W*.04), r = rough(x1+W*.86);   // полосы у левого и правого края на высоте середины колеса — там в рамке только шина
+  return r > l*1.5 && r > .03 ? 1 : l > r*1.5 && l > .03 ? -1 : 0;
+}
 function boxWheel(b, M2, side = 0){
   const W = b.x2-b.x1, H = b.y2-b.y1, s = M2 ? M2.w/photo.width : 1, cands = [];
   for (const R of [H/2, H/2*1.05, H/2*1.1, W/2, W/2.08]){
@@ -677,7 +685,7 @@ function boxWheel(b, M2, side = 0){
     for (const t of ts){
       if (t < .25 || t > 1) continue;
       const rx = R*t, cy = b.y2-R, free = Math.max(0, W/2-rx);   // free — на сколько лицевая сторона может съехать от центра рамки
-      for (const sd of side ? [side] : free < R*.04 ? [0] : [-1, 0, 1]) cands.push({R, t, cx:(b.x1+b.x2)/2 + sd*free, cy, sd, t0:t0 === null ? 1 : t0, prior:-Math.abs(t-(t0 === null ? 1 : t0))*.25 - Math.abs(R/(H/2)-1.03)*.15});
+      for (const sd of free < R*.04 ? [0] : [-1, 0, 1]) cands.push({R, t, cx:(b.x1+b.x2)/2 + sd*free, cy, sd, t0:t0 === null ? 1 : t0, prior:(side && sd === side ? .03 : 0) - Math.abs(t-(t0 === null ? 1 : t0))*.25 - Math.abs(R/(H/2)-1.03)*.15});
     }
   }
   let best = null;
@@ -692,12 +700,17 @@ function boxWheel(b, M2, side = 0){
     const tries = [p, best, ...cands.filter(c=>c.sd && c.t === p.t && c.R === p.R)];
     let fit = null;
     for (const c of tries){ const f = rimFit(M2, {cx:c.cx*s, cy:c.cy*s}, c.R*s, c.t); if (f && (!fit || f.n > fit.n)) fit = {...f, R:c.R}; if (fit && fit.n >= 50) break; }
-    const inBox = fit && fit.cx/s > b.x1 && fit.cx/s < b.x2 && fit.cy/s > b.y1 && fit.cy/s < b.y2 && fit.ry/s < fit.R*.87 && fit.ry/s > fit.R*.5;   // обод занимает 50–87% радиуса шины: больше — это уже край шины
+    const inBox = fit && fit.cx/s > b.x1 && fit.cx/s < b.x2 && fit.cy/s > b.y1 && fit.cy/s < b.y2 && fit.ry/s < fit.R*.87 && fit.ry/s > fit.R*.5
+      && fit.cx/s - fit.ry/s*fit.t > b.x1 - W*.04 && fit.cx/s + fit.ry/s*fit.t < b.x2 + W*.04 && fit.cy/s + fit.ry/s < b.y2;   // обод целиком внутри рамки колеса   // обод занимает 50–87% радиуса шины: больше — это уже край шины
     if (inBox && fit.n >= 30) return {x:fit.cx/s, y:fit.cy/s, r:fit.ry/s, t:fit.t, a:0, R:fit.R, edge:fit.n/72, nn:true, c:b.c, how:"лучи "+fit.n};
   }
   let how = "край";
   if (best.e < .1){                              // край диска не виден (чёрный диск): берём типичные пропорции
-    const mid = cands.filter(c=>c.sd === (side||0)).sort((p,q)=>q.prior-p.prior)[0] || best; best = {...mid, f:.66}; how = "пропорции";
+    const tr = 0;   // treadSide(M2, b, s) пока выключен: не проверен на фото с чёрными дисками без вставки
+    //      // протектор виден сбоку — значит колесо под углом, а лицевая сторона прижата к другому краю рамки
+    const pool = tr ? cands.filter(c=>c.sd === -tr && c.t < .97) : cands.filter(c=>c.sd === 0);
+    const mid = pool.sort((p,q)=>(q.prior+(tr ? -Math.abs(q.t-Math.min(.9, q.t0))*.25 : 0))-(p.prior+(tr ? -Math.abs(p.t-Math.min(.9, p.t0))*.25 : 0)))[0] || best;
+    best = {...mid, f:.66}; how = tr ? "протектор" : "пропорции";
     const f = M2 && tireInner(M2, {cx:best.cx*s, cy:best.cy*s, t:best.t}, best.R*s); if (f){ best.f = f; how = "резина"; }
   } else if (M2){                                // подправляем центр и ракурс вокруг найденного
     let c = {cx:best.cx*s, cy:best.cy*s, ry:best.R*best.f*s, t:best.t, a:0}, e = rimContrast(M2, c); const c0 = {...c};
@@ -719,7 +732,7 @@ async function findWheels(){                     // нейросеть, а ес�
     const ws = bs.filter(b=>b.c >= .3).map(b=>({b, s:b.c*Math.sqrt((b.x2-b.x1)*(b.y2-b.y1))})).sort((a,b)=>b.s-a.s).map(o=>o.b);
     if (!ws.length) return [];
     const a = ws[0], ah = a.y2-a.y1;             // главное колесо — самое уверенное и крупное; второе — похожее по размеру, в стороне от него
-    const b = bs.filter(o=>o !== a && o.c >= .18).map(o=>({o, s:o.c*Math.sqrt((o.x2-o.x1)*(o.y2-o.y1))})).sort((p,q)=>q.s-p.s).map(p=>p.o)
+    const b = bs.filter(o=>o !== a && (o.c >= .3 || o.c >= .18 && (o.x2-o.x1)/(o.y2-o.y1) >= .55))   // узкая неуверенная рамка — дальнее колесо, наполовину закрытое кузовом: диск туда сам не ставим.map(o=>({o, s:o.c*Math.sqrt((o.x2-o.x1)*(o.y2-o.y1))})).sort((p,q)=>q.s-p.s).map(p=>p.o)
       .find(o=>{ const q = (o.y2-o.y1)/ah; return q > .4 && q < 2.5 && Math.abs((o.x1+o.x2)-(a.x1+a.x2))/2 > Math.max(ah, o.y2-o.y1)*.6; });
     // камера смещена к более крупному колесу: протектор виден с её стороны, лицевая сторона обоих колёс прижата к противоположному краю рамки
     let side = 0; if (b){ const q = (b.y2-b.y1)/ah, dir = Math.sign((b.x1+b.x2)-(a.x1+a.x2)); side = q < .93 ? dir : q > 1.07 ? -dir : 0; }
